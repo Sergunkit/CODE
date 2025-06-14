@@ -1,0 +1,50 @@
+; sudo whoami
+; sudo su ; переход под root
+; cut -d: -f1 /etc/passwd => просмотр пользователей
+; getent passwd => просмотр пользователей
+
+
+; sudo apt-get update
+; apt update && apt install -y NetworkManager -{daemon, tui}
+; nmtui
+
+
+##### 3
+
+; ● Создайте пользователя net_admin на РОУТЕРАХ  HQ-RTR и BR-RTR/////////////////////////////////////////////////////////////////////////////////////////
+useradd -m -u 1010 net_admin  ; -m	Создаёт домашний каталог (если он ещё не существует)/ -u 1010	Задаёт пользовательский идентификатор (UID) вручную, вместо автоназначения системой
+passwd net_admin => P@ssw0rd
+cat /etc/passwd => проверяем
+vim /etc/sudoers => WHEEL_USERS ALL = (AL:AL) ALL ;раскомментируем
+                       WHEEL_USERS ALL = (AL:AL) NOPASSWD: ALL ;раскомментируем
+; nano /etc/sudoers => в sudoers добавляем нашего пользователя с такими же правами как root
+vim /etc/group => ;Вписать ТОЛЬКО нового пользователя (sshuser) в группу wheel (она уже СУЩЕСТВУЕТ)
+
+;вариант
+; useradd net_admin -m -s/bin/bash -GWheel
+; passwd net_admin => P@ssw0rd
+; grep net_admin /etc/passwd
+; echo 'WHEEL_USERS ALL = (ALL:ALL) NOPASSWORD: ALL' >> /etc/sudoers
+; grep net_admin /etc/group
+; su net_admin
+
+; ● Создайте пользователя sshuser на СЕРВЕРАХ х HQ-SRV и BR-SRV/////////////////////////////////////////////////////////////////////////////////////////
+useradd -m -u 1010 sshuser
+passwd sshuser => P@ssw0rd
+cat /etc/passwd => проверяем
+vim /etc/sudoers => WHEEL_USERS ALL = (AL:AL) ALL ;раскомментируем
+                       WHEEL_USERS ALL = (AL:AL) NOPASSWD: ALL ;раскомментируем
+; nano /etc/sudoers => в sudoers добавляем нашего пользователя с такими же правами как root
+: => ;Вписать ТОЛЬКО нового пользователя (sshuser) в группу wheel (она уже СУЩЕСТВУЕТ)
+
+
+;вариант
+; groupadd sshuser -g1010
+; useradd sshuser -u1010 -g1010 -m -s/bin/bash
+; passwd sshuser => P@ssw0rd
+; grep sshuser /etc/passwd
+; usermode -aG wheel sshuser
+; echo 'WHEEL_USERS ALL = (ALL:ALL) NOPASSWORD: ALL' >> /etc/sudoers
+
+
+P@ssw0rd

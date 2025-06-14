@@ -1,0 +1,94 @@
+# для серверов (HQ-SRV и BR-SRV):
+
+#делаем файл
+
+create_users.sh:
+
+#!/bin/bash
+
+
+# Создание пользователя sshuser
+
+useradd -u 1010 -m sshuser
+
+echo "sshuser:P@ssw0rd" | chpasswd
+
+# Настройка права на sudo без пароля для пользователя sshuser 
+
+echo "sshuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/sshuser
+
+chmod 440 /etc/sudoers.d/sshuser
+
+
+
+#для маршрутизаторов (HQ-RTR и BR-RTR):
+
+#делаем файл create_net_admin.sh:
+
+#!/bin/bash
+
+# Создание пользователя net_admin
+
+useradd -m net_admin
+
+echo "net_admin:P@$$word" | chpasswd
+
+
+# Настройка прав для пользователя net_admin (полные привилегии)
+
+echo "net_admin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/net_admin
+
+chmod 440 /etc/sudoers.d/net_admin
+# делаем файлы исполняемыми:
+
+chmod +x create_users.sh
+
+chmod +x create_net_admin.sh
+
+ 
+
+# Запустите скрипт на соответствующем сервере или маршрутизаторе
+
+./create_users.sh    # Для серверов
+
+./create_net_admin.sh # Для маршрутизаторов
+
+ 
+
+ 
+
+#Настройка безопасного удаленного доступа на серверах HQ-SRV и BR-SRV
+
+#· Для подключения используйте порт 2024
+
+#· Разрешите подключения только пользователю sshuser
+
+#· Ограничьте количество попыток входа до двух
+
+#· Настройте баннер «Authorized access only»
+
+sudo nano /etc/ssh/sshd_config
+
+#Port 22 =>Port 2024
++AllowUsers sshuser
++MaxAuthTries 2
+#Banner none => 
+Banner /etc/issue.net
+#В файле issue.net
+echo "Authorized access only" | sudo tee /etc/issue.net
+ 
+sudo systemctl restart sshd
+ 
+#Настройка часового пояса
+
+#Настройте часовой пояс на всех устройствах, согласно месту проведения экзамена.
+
+sudo timedatectl set-timezone Europe/Moscow
+timedatectl - проверка
+ 
+ 
+
+
+
+ 
+

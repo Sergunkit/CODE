@@ -1,0 +1,553 @@
+sudo whoami
+sudo apt-get update –y
+# приватные адреса: 192.168.. /172.16.. /10.10..
+# посмотреть все записи папки:
+cat /etc/net/ifaces/ens18/*
+vim /etc/sysconfig/iptables
+
+; Адреса:
+; isp  DHCP провайдера / 172.16.4.1 /  172.16.5.1
+; HQ-RTR 172.16.4.2 / 192.168.20.1 / 192.168.20.97
+; BR-RTR 172.16.5.2 / 192.168.20.65
+; HQ-SRV 192.168.20.2 
+; HQ-CLI 192.168.20.98
+; BR-SRV 192.168.20.66
+
+
+
+
+ON ISP:;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+root - toor
+hostnamectl hostname ISP.au-teame.irpo; exec bash
+apt-get update
+apt-get install NetworkManager-tui -y
+systemctl enable --now NetworkManager
+systemctl restart network
+
+nmtui => ens19: ProfileName: HQ
+                ADDRESSES: 172.16.4.1/28
+                DNS servers: 192.168.20.2
+                Search Domains: au-team.irpo
+nmtui => ens20: ProfileName: BR
+                ADDRESSES: 172.16.5.1/28
+                DNS servers: 192.168.20.2
+                Search Domains: au-team.irpo
+        hostname: ISP.au-team.irpo
+        activate -> dactivate -> activate
+systemctl restart network
+systemctl restart NetworkManager
+
+ip -br a
+
+ip -c a ; смотрим mac-адреса
+
+apt-get update
+apt-get install -y iptables
+iptables -t nat -j MASQUERADE -A POSTROUTING -o ens18 ; в сторону колледжа
+iptables-save >> /etc/sysconfig/iptables
+vim /etc/sysconfig/iptables
+iptables-save ; проверка
+
+vim /etc/net/sysctl.conf => 
+                        ...
+                        net.ipv4.ip_forward = 0 => net.ipv4.ip_forward = 1
+                        ...
+systemctl restart network
+
+ON BR-RTR:;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+root - toor 
+hostnamectl hostname BR-RTR.au-team.irpo ; exec bash (либо (cntrl + "D")x2)
+
+##### 3 - users
+
+ip -br a
+; ens18:
+vim /etc/net/ifaces/ens18/options ; меняем dhcp на static
+; vim /etc/net/ifaces/ens19/options ; меняем dhcp на static  NM_CONTRILLED=yes;
+; cat /etc/net/ifaces/ens18/ipv4address => 172.16.5.2/28
+; cat /etc/net/ifaces/ens18/ipv4route => default via 172.16.5.1 ; проверяем шлюз
+echo '172.16.5.2/28' >> /etc/net/ifaces/ens18/ipv4address
+echo 'default via 172.16.5.1' >> /etc/net/ifaces/ens18/ipv4route
+echo 'nameserver 8.8.8.8' >> /etc/net/ifaces/ens18/resolv.conf
+
+systemctl restart network
+; vim /etc/net/ifaces/ens19/resolv.conf => nameserver 8.8.8.8
+; systemctl restart network
+; ping 172.16.5.1
+; ping 172.16.4.2
+; ping 8.8.8.8
+; ping 192.168.100.1
+
+##### настройка ens19 для BR-SRV
+mkdir /etc/net/ifaces/ens19
+cp /etc/net/ifaces/ens18/options /etc/net/ifaces/ens19/options
+vim /etc/net/ifaces/ens19/options => NM_CONTROLLED=yes  ; меняем dhcp на static
+vim /etc/net/sysctl.conf => 
+                        ...
+                        net.ipv4.ip_forward = 0 => net.ipv4.ip_forward = 1
+                        ...
+systemctl restart network
+ping 8.8.8.8
+apt-get update -y
+apt-get install NetworkManager-tui -y
+systemctl enable --now NetworkManager
+; systemctl restart  network
+; systemctl restart  NetworkManager
+nmtui => ens19: ProfileName: BR
+                ADDRESSES: 192.168.20.65/27
+                DNS servers: 192.168.20.2
+                Search Domains: au-team.irpo
+        hostname: BR-RTR.au-team.irpo
+        activate -> dactivate -> activate
+systemctl restart NetworkManager
+systemctl restart network
+
+##### 6 ip-tunnel
+nmtui => "add" => IP tunnel
+                ProfileName: gre1
+                device: gre1
+                Parent: ens18
+                LocalIp: 172.16.5.2
+                RemotIp: 172.16.4.2
+                ipv4 configuration Addresses: 192.168.20.122/30
+        activate -> dactivate -> activate
+systemctl restart network
+systemctl restart NetworkManager
+ls /etc/NetworkManager/system-connections => gre1.nmconnection
+vim /etc/NetworkManager/system-connections/gre1.nmconnection => после строчки remote добавить ttl=128
+nmcli connection edit gre1
+nmcli =>       set ip-tunnel.ttl 64
+save
+quit
+
+##### 7 Обеспечьте динамическую маршрутизацию: ресурсы одного офиса должны быть доступны из другого офиса.
+apt-get install -y frr
+vim /etc/frr/daemons => ospfd=yes
+systemctl restart frr
+systemctl enable frr
+vtysh
+conf t
+ip forwarding
+router ospf
+network 192.168.20.120/30 area 0 ;IP-tunnel remote
+network 192.168.20.64/27 area 0 ;сеть br-rtr <-> br-srv 192.168.20.65
+do sh run ;проверка
+passive-interface default
+ex
+int gre1
+no ip ospf passive
+ex
+ex
+wr
+ex
+
+systemctl restart  network
+systemctl restart  NetworkManager
+; после настройки HQ-RTR проверяем ping 192.168.20.121 -c3
+
+###### 8 Настройка динамической трансляции адресов.
+apt-get install -y iptables
+iptables -t nat -j MASQUERADE -A POSTROUTING
+; vim /etc/sysconfig/iptables ;для изменения iptables
+iptables-save >> /etc/sysconfig/iptables
+iptables-save
+systemctl enable --now iptables
+; проверяем интернет на BR-SRV
+
+###### настройка времени 11
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка после настройки HQ-RTR:
+chronyc tracking
+
+
+
+ON HQ-RTR:;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+root - toor
+ip -br a
+hostnamectl hostname HQ-RTR.au-team.irpo ; exec bash
+
+##### 3 - users
+
+ens18:
+vim /etc/net/ifaces/ens18/options =>
+                                  BOOTPROTO=static
+                                  ...
+                                  SYSTEMD_BOOTPROTO=static
+
+echo '172.16.4.2/28' >> /etc/net/ifaces/ens18/ipv4address
+echo 'default via 172.16.4.1' >> /etc/net/ifaces/ens18/ipv4route
+echo 'nameserver 8.8.8.8' >> /etc/net/ifaces/ens18/resolv.conf
+; vim /etc/net/ifaces/ens18/ipv4address => 172.16.4.2/28
+; vim /etc/net/ifaces/ens18/ipv4route => default via 172.16.4.1  ; прописываем шлюз
+; vim /etc/net/ifaces/ens18/resolv.conf => nnameserver 192.168.20.2
+;                                          domain au-team.irpo (исправить после настройки DNS)
+
+systemctl restart network
+
+vim /etc/net/sysctl.conf =>
+                        ...
+                        net.ipv4.ip_forward = 0 => net.ipv4.ip_forward = 1
+                        ...
+
+systemctl restart network
+ip -br a
+ping 172.16.4.1
+ping 8.8.8.8 ; проверка связи с интернетом
+
+; vim /etc/net/ifaces/ens18/resolv.conf           
+; cat /etc/net/ifaces/ens19/options //проверяем static
+; vim /etc/net/ifaces/ens19/ipv4address
+; 192.168.100.1/28
+
+; systemctl restart network
+ip -br a
+
+###### 4 VLAN
+apt-get install -y openvswitch
+systemctl enable --now openvswitch
+ovs-vsctl add-br HQ-SW ; добавляем бридж
+ovs-vsctl list-br
+ovs-vsctl add-port HQ-SW ens19
+ovs-vsctl add-port HQ-SW vlan100 tag=100 -- set interface vlan100 type=internal
+ovs-vsctl add-port HQ-SW vlan200 tag=200 -- set interface vlan200 type=internal
+ovs-vsctl add-port HQ-SW vlan999 tag=999 -- set interface vlan999 type=internal
+mkdir /etc/net/ifaces/vlan100
+mkdir /etc/net/ifaces/vlan200
+mkdir /etc/net/ifaces/vlan999
+cp /etc/net/ifaces/ens18/options /etc/net/ifaces/vlan100/options
+cp /etc/net/ifaces/ens18/options /etc/net/ifaces/vlan200/options
+cp /etc/net/ifaces/ens18/options /etc/net/ifaces/vlan999/options
+echo '192.168.20.1/26' >> /etc/net/ifaces/vlan100/ipv4address
+echo '192.168.20.97/28' >> /etc/net/ifaces/vlan200/ipv4address
+echo '192.168.20.113/29' >> /etc/net/ifaces/vlan999/ipv4address
+systemctl restart network
+ip -br a
+
+##### 6 ip-tunnel
+apt-get update
+apt-get install NetworkManager-tui –y
+systemctl enable --now NetworkManager
+systemctl restart network
+systemctl restart NetworkManager
+
+nmtui => "add" => ip tunnel
+                ProfileName: gre1
+                MODE: GRE
+                device: gre1
+                Parent: ens18
+                LocalIp: 172.16.4.2
+                RemotIp: 172.16.5.2
+                ipv4 configuration => manual => Addresses: 192.168.20.121/30
+        hostname: HQ-RTR.au-teame.irpo
+        activate -> dactivate -> activate
+systemctl restart network
+systemctl restart NetworkManager
+ls /etc/NetworkManager/system-connections => gre1.nmconnection
+vim /etc/NetworkManager/system-connections/gre1.nmconnection => после строчки remote добавить ttl=128
+reboot
+nmcli connection edit BR-RTR
+nmcli >>>       set ip-tunnel.ttl 64
+save
+quit
+
+###### 7 Обеспечьте динамическую маршрутизацию: ресурсы одного офиса должны быть доступны из другого офиса.
+apt-get update
+apt-get install -y frr
+vim /etc/frr/daemons => ospfd=yes
+systemctl restart frr
+systemctl enable --now frr
+vtysh ;вход
+
+conf t ;доступ к редактированию
+ip forwarding
+router ospf
+network 192.168.20.120/30 area 0 ;IP-tunnel
+network 192.168.20.0/26 area 0 ;100
+network 192.168.20.96/28 area 0 ;200
+network 192.168.20.112/29 area 0 ;999
+do sh run ;проверка
+passive-interface default
+ex
+int gre1
+no ip ospf passive
+ex
+ex
+wr
+ex
+##### переход на br-rtr
+systemctl restart frr.service ;после рестарата на настроенном br-rtr и hq-rtr
+ping 192.168.20.122 ;ping на BR-RTR
+ip r ;показывает известныe сети -?
+
+###### 8 Настройка динамической трансляции адресов.
+apt-get install -y iptables
+iptables -t nat -j MASQUERADE -A POSTROUTING
+vim /etc/sysconfig/iptables ;для изменения iptables
+iptables-save >> /etc/sysconfig/iptables
+iptables-save ;проверка - д. показаать настройки
+systemctl enable --now iptables
+; проверяем интернет на HQ-SRV и HQ-CLI
+
+
+###### 9 Настройка протокола динамической конфигурации хостов.
+apt-get update
+apt-get install -y dhcp-server
+vim /etc/sysconfig/dhcpd => DHCPDARGS=vlan200
+cp /etc/dhcp/dhcpd.conf.example /etc/dhcp/dhcpd.conf
+vim /etc/dhcp/dhcpd.conf => 'example.org' меняем на 'au-team.irpo' и в след. строке меняем два ххх.org на один 192.168.20.2 и
+  и раскомичиваем ddns-update-style none; => ddns-update-style interim;
+                                              ; option domain-name-servers 192.168.20.2, 192.168.20.66
+                                              ; ниже пишем: 
+                                              update-static-leases on;
+                                              zone au-team.irpo{
+                                                primary 192.168.20.2;
+                                              }
+                                              zone 20.168.192.in-addr.arpa{
+                                                primary 192.168.20.2;
+                                              }
+                                              ; zone <обратный ip сети с третьего октета (см. выше)>.in-addr.arpa{
+                                              ;   primary 192.168.20.2;
+                                              ; } пишем, если у нас различаются третьи октеты в vlan100 и vlan200
+
+                                              ;  в строчке 
+                                              subnet 192.168.20.96 netmask 255.255.255.240 {
+                                                range 192.168.20.98 192.168.20.103;
+                                                option routers 192.168.20.97;
+                                              }
+
+                                              ; для постоянного dhcp для HQ-CLI:
+                                              ; fantasia стираем, пишем:
+                                              host HQ-CLI {
+                                                hardware ethernet BC:24:11:0B:B4:FE; mac адрес на HQ-CLI (в оборудовании)
+                                                fixed-address 192.168.20.98; адрес HQ-CLI
+                                              }
+                                              
+                                              ; все host и subnet комментируем
+systemctl restart dhcpd
+systemctl enable dhcpd
+systemctl status dhcpd
+
+
+###### 11 настройка времени
+timedatectl set-timezone Europe/Moscow
+apt-get install -y chrony
+vim /etc/chrony.conf => комментировать pool pool.ntp.org iburst
+                        server 192.168.20.1 iburst ;hq-rtr
+                        local stratum 5
+                        allow 192.168.20.0/26 ; 100
+                        allow 192.168.20.96/28 ;200
+                        allow 192.168.20.64/27 ;br-rtr <-> br-srv
+                        allow 192.168.20.120/30 ;br-rtr <-> hq-rtr ip-tunnel
+systemctl restart chronyd
+
+;Настройка клиентов синхронизации времени (HQ-SRV, HQ-CLI, BR-RTR, BR-SRV.) на каждом: frr
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка:
+chronyc tracking
+
+
+
+ON HQ-SRV:  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+inter passwd: 'toor'
+hostnamectl hostname HQ-SRV.au-team.irpo ; exec bash
+vim /etc/net/ifaces/ens18/options ; меняем dhcp на static
+echo '192.168.20.2/28' >> /etc/net/ifaces/ens18/ipv4address
+echo 'default via 192.168.20.1' >> /etc/net/ifaces/ens18/ipv4route
+echo 'nameserver 8.8.8.8' >> /etc/net/ifaces/ens18/resolv.conf
+; vim /etc/net/ifaces/ens18/resolv.conf => nnameserver 192.168.20.2 -?
+;                                          domain au-team.irpo (исправить после настройки DNS) ######
+systemctl restart network
+ip -br a 
+ping 192.168.20.1 -c3
+ping 8.8.8.8 -c3
+
+##### 3 - users
+
+##### 5. Настройка безопасного удаленного доступа на серверах HQ-SRV и BR-SRV:
+
+apt-get update
+apt-get install openssh-server
+cd /etc/openssh
+cp ssh_config ssh_config.back
+vim sshd_config => port 2024, MaxAuthTries 2, Banner /etc/openssh/banner, AllowUsers sshuser
+vim /etc/openssh/banner => 
+********************************************************************************
+************************** * Authorized access only * **************************
+********************************************************************************
+systemctl restart sshd
+
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка:
+chronyc tracking
+timedatectl status
+
+###### 10 Настройка DNS для офисов HQ и BR.
+; apt-get update -y
+apt-get install -y bind
+vim /var/lib/bind/etc/options.conf => 
+listen-on { any; };
+listen-on-v6 { none; };
+forwarders { 8.8.8.8; };раском-м
+allow-query { any; };                                      
+allow-recursion { any; };                                   
+
+vim /var/lib/bind/etc/rfc1912.conf =>
+ zone "au-team.irpo" {
+ type master;
+ file "au-team"; (au-team.db)
+ allow-update { any; };
+ allow-transfer { any; };
+                                              
+ ; localdomain удалем
+
+ zone "20.168.192.in-addr.arpa" {
+  type master;
+  file "20.in-addr.arpa";
+  allow-update { any; }
+}
+ ; ненужные зоны удаляем
+
+;Копируем файл empty (шаблон) в au-team, 100.168.192.in-addr.arpa, 200.168.192.in-addr.arpa:
+cd /var/lib/bind/etc/zone
+ls -la
+cp empty au-team
+
+vim au-team => @  IN  SOA hq-srv.au-team.irpo. root.au-team.irpo. ( 
+  ... 
+  )
+  IN  NS  hq-srv.au-team.irpo.
+  IN  A 192.168.20.2
+hq-rtr  IN  A 192.168.20.1
+br-rtr  IN  A 192.168.20.65
+hq-srv  IN  A 192.168.20.2
+hq-cli  IN  A 192.168.20.98
+br-srv  IN  A 192.168.20.66
+
+moodle  IN  CNAME hq-rtr.
+wiki  IN  CNAME hq-rtr.
+
+cp au-team 20.in-addr.arpa
+vim 20.in-addr.arpa => @  IN  SOA 20.168.192.in-addr.arpa. root.20.168.192.in-addr.arpa. ( 
+  ... 
+  )
+  IN  NS  20.168.192.in-addr.arpa.
+  IN  A 192.168.20.2
+1 IN  PTR hq-rtr.au-team.irpo.
+2 IN  PTR hq-srv.au-team.irpo.
+98  IN  PTR hq-cli.au-team.irpo.
+
+
+cd /var/lib/bind/etc/
+rndc-confgen > /var/lib/bind/etc/rndc.key
+sed -i '6,$d' rndc.key
+chgrp -R named zone/
+named-checkconf
+named-checkconf -z =>
+      zone au-team.irpo/IN: loaded serial 2024092400
+      zone 20.168.192.in-addr.arpa/IN: loaded serial 2024092400
+systemctl enable --now bind
+
+; делаем на всех машинах:
+vim /etc/net/ifaces/ens18/resolv.conf => nameserver 192.168.20.2 
+                                         domain au-team.irpo 
+systemctl restart network
+
+###### 11 настройка времени
+;Настройка клиентов синхронизации времени (HQ-SRV, HQ-CLI, BR-RTR, BR-SRV.)
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst ; + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка:
+chronyc tracking
+
+
+ON BR-SRV:   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+root - toor
+hostnamectl hostname BR-SRV.au-teame.irpo ; exec bash
+
+##### 3 - users
+
+ip -br a
+; vim /etc/net/ifaces/ens18/ipv4address => 192.168.20.66/28
+; vim /etc/net/ifaces/ens18/ipv4route => default via 192.168.20.65  // прописываем шлюз
+vim /etc/net/ifaces/ens18/options ; меняем dhcp на static
+echo '192.168.20.66/28' >> /etc/net/ifaces/ens18/ipv4address
+echo 'default via 192.168.20.65' >> /etc/net/ifaces/ens18/ipv4route
+echo 'nameserver 8.8.8.8' >> /etc/net/ifaces/ens18/resolv.conf
+; vim /etc/net/ifaces/ens18/resolv.conf => nameserver 192.168.20.2 -?
+;                                          domain au-team.irpo (если DNS настроился)
+vim /etc/net/sysctl.conf =>
+                        ...
+                        net.ipv4.ip_forward = 0 => net.ipv4.ip_forward = 1
+                        ...
+systemctl restart network
+ping 192.168.20.65
+
+##### 5. Настройка безопасного удаленного доступа на серверах HQ-SRV и BR-SRV (ssh):
+apt-get install openssh-server
+cd /etc/openssh
+cp ssh_config ssh_config.back
+vim sshd_config => port 2024, MaxAuthTries 2, banner /etc/openssh/banner, AllowUsers sshuser
+vim /etc/openssh/banner => 
+********************************************************************************
+************************** * Authorized access only * **************************
+********************************************************************************
+systemctl restart sshd
+; проверка ssh:
+ssh sshuser@192.168.20.2 -p 2024
+
+
+###### 11 настройка времени
+;Настройка клиентов синхронизации времени (HQ-SRV, HQ-CLI, BR-RTR, BR-SRV.)
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst ; + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка:
+chronyc tracking
+
+ON HQ-CLI: ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+user passwd: 'resu'
+su -- => password 'toor'
+ip -br a ; если есть проверяем пинги и переходим к yandex
+hostnamectl hostname HQ-CLI.au-team.irpo ; exec bash (либо (cntrl + "D")x2) пароль root - toor
+ip -br a ; если есть проверяем пинги и переходим к yandex, если нет :
+vim /etc/net/ifaces/ens18/options => меняем dhcp на static
+echo '192.168.20.98/28' >> /etc/net/ifaces/ens18/ipv4address
+echo 'default via 192.168.20.97' >> /etc/net/ifaces/ens18/ipv4route
+echo 'nameserver 8.8.8.8' >> /etc/net/ifaces/ens18/resolv.conf
+; комментируем host в vim /etc/dhcp/dhcpd.conf на HQ-RTR проверяем инет и ставим yandex
+; vim /etc/net/ifaces/ens18/resolv.conf => nameserver 192.168.20.2 -?
+                                        ;  domain au-team.irpo (исправить на 8.8.8.8 при не скачивании пакeтов) ######
+systemctl restart network
+; systemctl restart NetworkManager
+ip -br a 
+; ping 192.168.200.1
+ping 192.168.20.97
+
+
+; ПРОВЕРКА НАСТРОЙКИ DHCP
+cat /etc/net/ifaces/ens18/options ; стоит dhcp
+; под root:
+rm -f /etc/net/ifaces/ens18/ipv4address
+systemctl restart network
+ping 192.168.20.97
+
+###### 9
+ip -br a ;+ можно посмотреть option и ipv4address там д.б. dhcp и ipv4address можно удалить и dhcp все равно прилетит
+###### установка yandex (2.9)
+apt-get update
+apt-get install yandex-browser-stable
+
+###### 11 настройка времени
+;Настройка клиентов синхронизации времени (HQ-SRV, HQ-CLI, BR-RTR, BR-SRV.)
+apt-get install -y chrony
+vim /etc/chrony.conf => server 192.168.20.1 iburst ; + комментировать pool pool.ntp.org iburst
+systemctl restart chronyd
+;проверка:
+chronyc tracking

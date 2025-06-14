@@ -1,0 +1,200 @@
+######4  ansible ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;Переходим на ВМ BR-SRV
+apt-get install -y ansible
+vim /etc/ansible/hosts => 
+[all]
+hq-srv ansible_host=192.168.20.2 ansible_connection=local
+hq-cli ansible_host=192.168.20.98 ansible_connection=local
+hq-rtr ansible_host=192.168.20.1 ansible_connection=local
+br-rtr ansible_host=192.168.20.65 ansible_connection=local
+ansible all -m ping
+
+
+#### 6 на маршрутизаторах сконфигурируйте статическую трансляцию портов. Внимательно читаем задание ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; HQ-RTR 
+iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination 192.168.20.2:2024 ; на HQ-SRV
+iptables-save >>  /etc/sysconfig/iptables ; >> допишет (> перезапишет)
+systemctl enable iptables --now 
+; vim /etc/sysconfig/iptables
+; BR-RTR
+iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination 192.168.20.66:8080 ; на BR-SRV
+iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination 192.168.20.66:2024 ; на BR-SRV
+iptables-save >>  /etc/sysconfig/iptables ; >> допишет (> перезапишет)
+systemctl enable iptables --now
+; проверка:
+ssh sshuser@192.168.20.1
+
+####2 Сконфигурируйте файловое хранилище:;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; на HQ-SRV
+; делаем три диска по одному гигу
+lsblk ; проврерка дисков
+apt-get install -y mdadm
+mdadm --create --verbose /dev/md0 --level=5 --raid-devices=3 /dev/sdc /dev/sdd /dev/sdb
+mdadm --detail --scan | sudo tee a /etc/mdadm.conf
+mkfs.ext4 /dev/md0
+mkdir -p /raid5
+blkid /dev/md0 >> /etc/fstab
+vim /etc/fstab
+/dev/md0: UUID="2adc065f-48d6-4fc1-b74d-6de80026d63c" /raid5 ext4 defaults 0 0 ; nolock вместо defaults
+; проверяем, что пространство монтируется:
+mount -a
+apt-get install -y nfs-server
+mkdir /raid5/nfs
+vim /etc/exports =>
+/srv/public -ro,insecure,no_subtree_check,fsid=1 *
+#/srv/share -rw,insecure,fsid=0,sec=krb5 *
+/raid5/nfs 192.168.20.98(rw,sync,no_subtree_check) ; адрес HQ-CLI
+
+export fs -a 
+systemctl restart nfs-server.service
+
+; на HQ-CLI:
+mkdir -p /mnt/nfs
+vim /etc/fstab => 
+192.168.20.2:/raid5/nfs /mnt/nfs nfs defaults 0 0 ; адрес HQ-SRV
+apt-get install -y nfs-utils nfs-common
+systemctl start rpc-statd
+systemctl start rpcbind
+mount -a ;проверка
+
+#######3 - time в первом модуле
+
+
+
+
+###### 1. Настройте доменный контроллер Samba на машине BR-SRV;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+apt-get update
+apt-get install -y task-samba-dc 
+rm -f /etc/samba/smb.conf
+rm -rf /var/lib/samba/
+rm -rf /var/cache/samba/
+mkdir -p /var/lib/samba
+mkdir -p /var/lib/samba/sysvol
+;(пароль для администратора используем – P@ssw0rd)
+samba-tool domain provision
+systemctl enable --now samba.service
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf ;overright - y
+cd /opt 
+visudo krb5.conf => %hq ALL=(ALL) NOPASSWD: /bin/cat, /bin/grep, /usr/bin/id 
+vim users.csv => user1.hq, P@ssw0rd
+                    user2.hq,P@ssw0rd
+                    user3.hq,P@ssw0rd
+                    user4.hq,P@ssw0rd
+                    user5.hq,P@ssw0rd
+mkdir smbscript
+cd smbscript/
+vim import.sh => #! bin/bash
+                    while IFS=' ,' read -r username password; do
+                        sudo samba-tool user create "$username" "$password"
+                        sudo samba-tool group addmembers hq "$username"
+                    done < /opt/users.csv
+
+chmod +x import.sh
+samba-tool group create hq
+./import.sh
+
+
+;Переходим на ВМ HQ-CLI;;;;;;;;;;;;;;;;;;;;;;
+cat /etc/resolv.conf => search au-team.irpo
+                        nameserver 192.168.20.2 ;br-srv
+
+;Открываем центр управления
+;Выбираем центр управления системой или через поиск ищем acc:
+;пароль toor
+;В разделе Users выбираем аутентификацию:
+Active directory domain : au-team.irpo
+                workgroup: au-team
+                comp name: HQ-CLI
+;Листаем вниз и нажимает «Apply» - Administrator пароль P@ssw0rd
+;Если все правильно сработало, то должно появиться приветственное окно:
+;Делаем reboot, после заходим в терминал - 
+;Проверяем, что работает домен на CLI-HQ:
+wbinfo --ping-dc
+;Возвращаемся на ВМ BR-SRV (пароль P@ssw0rd) dir smbscript;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+samba-tool dns add br-srv.au-team.irpo au-team.irpo hq-rtr A 192.168.20.1  Administrator
+samba-tool dns add br-srv.au-team.irpo au-team.irpo wiki CNAME hq-rtr.au-team.irpo -U Administrator
+samba-tool dns add br-srv.au-team.irpo au-team.irpo modle CNAME hq-rtr.au-team.irpo -U Administrator
+
+
+
+####5. Развертывание приложений в Docker на сервере BR-SRV;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; на BR-SRV
+iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination 192.168.20.66:8080
+iptables -A FORWARD -p tcp -d 192.168.20.66 --dport 8080 -j ACCEPT
+iptables-save >> /etc/sys
+iptables-save >> /etc/sysconfig/iptables
+systemctl enable —nou iptables.service
+apt-get install -y docker-io docker-compose
+touch wiki.yml
+vim wiki.yml =>
+version: '3'
+services:
+    wiki: image: mediawiki container _name: wiki restart: always
+        ports: - 8080:80
+        links: - mariadb
+        volumes:
+        - images:/var/www/html/inages
+        #- ./LocalSettings.php:/var/wuw/html/LocalSettings.php
+    mariadb:
+        image: mariadb
+        container_name: mariadb hostname: mariadb restart: always
+        environment:
+            MYSQL DATABASE: mediawiki
+            MYSQL USER: wiki
+            MYSQL_PASSWORD: WikiP@ssuBrd MYSQL_RANDOM_ROOT_PASSWORD: 1
+        volumes:
+        - db:/var/lib/mysql
+volumes:
+    images:
+    db:
+
+    
+"wiki.yml" 30L, 571B
+
+docker-compose -f wiki.yml up -d
+; графическая установка
+/home/user/LocalSettings.php root@192.168.0.10:~/
+vim wiki.yml =>
+        version: '3'
+        services:
+        wiki: image: mediawiki
+        container_name: wiki restart: always
+        ports: - 8080:80
+        links: - mariadb
+        volumes:
+        - images:/var/www/html/images
+        /LocalSettings.php:/var/wuw/html/LocalSettings.php
+        mariadb:
+        image: mariadb
+        container_name: mariadb hostname: mariadb restart: always
+        environment:
+        MYSOL DATABASE: mediawiki
+        MYSOL USER: wiki
+        MYSOL PASSWORD: WikiPesswürd
+        MYSQL_RANDON_ROOT_PASSHORD: 1
+        volumes:
+        - db:/var/lib/mysql
+        volumes:
+        images:
+        db :
+        "wiki.yml" 3AL, 569B
+
+#### 8 установка nginx
+; на HQ_RTR
+apt-get install -y nginx
+cd /etc/nginx/sites-available.d/
+vim proxy.conf =>
+listen 80;
+server_name moodle.au-team.irpo
+proxy_pass http://192.168.20.2;
+
+listen 80;
+server_name wiki.au-team.irpo
+proxy_pass http://192.168.20.66
+
+
+
+ln -s /etc/nginx/sites-available.d/proxy.conf /etc/nginx/sites-led.d/
+nginx -t 
+systemctl restart nginx.service
+systemctl enable --now nginx.service
